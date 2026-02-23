@@ -1,0 +1,576 @@
+import embodied
+import jax
+import jax.numpy as jnp
+import ruamel.yaml as yaml
+
+tree_map = jax.tree_util.tree_map
+sg = lambda x: tree_map(jax.lax.stop_gradient, x)
+
+import logging
+
+logger = logging.getLogger()
+
+
+class CheckTypesFilter(logging.Filter):
+    def filter(self, record):
+        return "check_types" not in record.getMessage()
+
+
+logger.addFilter(CheckTypesFilter())
+
+from . import behaviors
+from . import jaxagent
+from . import jaxutils
+from . import nets
+from . import ninjax as nj
+
+
+@jaxagent.Wrapper
+class Agent(nj.Module):
+
+    configs = yaml.YAML(typ="safe").load(
+        (embodied.Path(__file__).parent / "configs.yaml").read()
+    )
+
+    def __init__(self, obs_space, act_space, step, config):
+        self.config = config
+        self.transfer_policy = False
+        self.obs_space = obs_space
+        self.act_space = act_space["action"]
+        self.step = step
+        self.wm = WorldModel(obs_space, self.act_space, config, name="wm")
+
+        self.task_behavior = getattr(behaviors, config.task_behavior)(
+            self.wm, self.act_space, self.config, name="task_behavior"
+        )
+        if config.expl_behavior == "None":
+            self.expl_behavior = self.task_behavior
+        else:
+            self.expl_behavior = getattr(behaviors, config.expl_behavior)(
+                self.wm, self.act_space, self.config, name="expl_behavior"
+            )
+
+        # Will be generated when set to transfer mode
+        self.transfer_wm = None
+        self.transfer_behavior = None
+
+    def policy_initial(self, batch_size):
+
+        prev_latent, prev_action = self.wm.initial(batch_size)
+
+        if self.transfer_wm is None:
+            prev_transfer_latent, _ = self.wm.initial(batch_size)
+        else:
+            prev_transfer_latent, _ = self.transfer_wm.initial(batch_size)
+
+        return (
+            (prev_latent, prev_transfer_latent, prev_action),
+            self.task_behavior.initial(batch_size),
+            self.expl_behavior.initial(batch_size),
+        )
+
+    def train_initial(self, batch_size):
+        return self.wm.initial(batch_size)
+
+    def policy(self, obs, state, mode="train"):
+        # TODO:
+        # state = (prev_latent, prev_transfer_latent, prev_action), task_state, expl_state
+        # - both prev_latent and prev_transfer_latent are a dict of three keys
+        #   'deter': float16[1,4096]; deterministic state; probably the ouput of the recurrent model
+        #   'logit': float16[1,32,32]; logits of the categorical distribution
+        #   'stoch': float16[1,32,32]; a sampled state from the categorical distribution
+        # - prev_action float32[1,7];
+        # - task_state ???
+        # - expl_state ???
+        self.config.jax.jit and print("Tracing policy function.")
+        obs = self.preprocess(obs)
+        (prev_latent, prev_transfer_latent, prev_action), task_state, expl_state = state
+
+        # Use the world model to get the latent state
+        # obs include ['image', 'intrinsic_reward', 'is_first', 'is_last', 'is_terminal', 'reward', 'cont']
+        embed = self.wm.encoder(obs)  # float16[1,12288]
+        latent, prior_latent = self.wm.rssm.obs_step(
+            prev_latent, prev_action, embed, obs["is_first"]
+        )  # latent contains 'deter', 'logit', 'stoch'
+
+        # TODO: why???
+        self.expl_behavior.policy(latent, expl_state)
+        transfer_latent = latent
+
+        if not self.transfer_policy:
+            task_outs, task_state = self.task_behavior.policy(
+                latent, task_state
+            )  # tfp.distributions.OneHotDist, {}
+            expl_outs, expl_state = self.expl_behavior.policy(
+                latent, expl_state
+            )  # tfp.distributions.OneHotDist, {}
+        else:  # TODO
+
+            transfer_embed = self.transfer_wm.encoder(obs)
+            transfer_latent, _ = self.transfer_wm.rssm.obs_step(
+                prev_transfer_latent, prev_action, transfer_embed, obs["is_first"]
+            )
+
+            task_logits = self.task_behavior.get_actor_logits(latent)
+            expl_logits = self.expl_behavior.get_actor_logits(latent)
+
+            transfer_task_logits = self.transfer_behavior.get_actor_logits(
+                transfer_latent
+            )
+            transfer_expl_logits = self.transfer_behavior.get_actor_logits(
+                transfer_latent
+            )
+
+            # Combine logits
+            task_logits = task_logits + transfer_task_logits
+            expl_logits = expl_logits + transfer_expl_logits
+
+            # Create distributions
+            task_dist = self.task_behavior.get_actor_dist(task_logits)
+            expl_dist = self.expl_behavior.get_actor_dist(expl_logits)
+
+            task_outs = {"action": task_dist}
+            expl_outs = {"action": expl_dist}
+
+        if mode == "eval":
+            outs = task_outs
+            outs["action"] = outs["action"].sample(seed=nj.rng())
+            outs["log_entropy"] = jnp.zeros(outs["action"].shape[:1])
+        elif mode == "explore":
+            outs = expl_outs
+            outs["log_entropy"] = outs["action"].entropy()
+            outs["action"] = outs["action"].sample(seed=nj.rng())  # float32[1,7]
+        elif mode == "train":
+            outs = task_outs
+            outs["log_entropy"] = outs["action"].entropy()
+            outs["action"] = outs["action"].sample(seed=nj.rng())
+        state = ((latent, transfer_latent, outs["action"]), task_state, expl_state)
+        return outs, state, prior_latent
+
+    def train(self, data, state):
+        # Somewhere in this function checks the number of variables in each optimizer.
+        # data:
+        # 'action': float32[16,64,7],
+        # 'id': uint8[16,64,16],
+        # 'image': uint8[16,64,64,64,3],
+        # 'intrinsic_reward': Traced<ShapedArray(int32[16,64,1])>with<DynamicJaxprTrace(level=1/0)>,
+        # 'is_first': Traced<ShapedArray(bool[16,64])>with<DynamicJaxprTrace(level=1/0)>,
+        # 'is_last': Traced<ShapedArray(bool[16,64])>with<DynamicJaxprTrace(level=1/0)>,
+        # 'is_terminal': Traced<ShapedArray(bool[16,64])>with<DynamicJaxprTrace(level=1/0)>,
+        # 'reset': Traced<ShapedArray(bool[16,64])>with<DynamicJaxprTrace(level=1/0)>,
+        # 'reward': Traced<ShapedArray(float32[16,64])>with<DynamicJaxprTrace(level=1/0)>
+        self.config.jax.jit and print("Tracing train function.")
+        metrics = {}
+        data = self.preprocess(data)
+
+        # Train the world model
+        state, wm_outs, mets = self.wm.train(
+            data, state
+        )  # state: (prev_latent, prev_action)
+        metrics.update(mets)
+
+        # Train the task behavior
+        context = {**data, **wm_outs["post"]}
+        start = tree_map(
+            lambda x: x.reshape([-1] + list(x.shape[2:])), context
+        )  # Flattens the first dimension of each tensor in context
+        _, mets = self.task_behavior.train(self.wm.imagine, start, context)
+        metrics.update(mets)
+
+        # Train the exploration behavior
+        if self.config.expl_behavior != "None":  # TODO
+            _, mets = self.expl_behavior.train(self.wm.imagine, start, context)
+            metrics.update({"expl_" + key: value for key, value in mets.items()})
+        outs = {}
+        return outs, state, metrics
+
+    def report(self, data):
+        self.config.jax.jit and print("Tracing report function.")
+        data = self.preprocess(data)
+        report = {}
+
+        # Update the report dictionary with the reward values from the data
+        report.update(
+            {key: data[key].mean() for key in data.keys() if "intrinsic_reward" in key}
+        )
+
+        report.update(self.wm.report(data))
+        mets = self.task_behavior.report(data)
+        report.update({f"task_{k}": v for k, v in mets.items()})
+        if self.expl_behavior is not self.task_behavior:
+            mets = self.expl_behavior.report(data)
+            report.update({f"expl_{k}": v for k, v in mets.items()})
+        return report
+
+    def preprocess(self, obs):
+        obs = obs.copy()
+        for key, value in obs.items():
+            # Skips any keys starting with "log_" or exactly equal to "key"
+            if key.startswith("log_") or key in ("key",):
+                continue
+            # Normalize images/videos to [0, 1]
+            if len(value.shape) > 3 and value.dtype == jnp.uint8:
+                value = jaxutils.cast_to_compute(value) / 255.0
+            else:
+                value = value.astype(jnp.float32)
+            obs[key] = value
+        # Continue
+        obs["cont"] = 1.0 - obs["is_terminal"].astype(jnp.float32)
+        return obs
+
+    def set_transfer(self, useTransfer):
+        self.transfer_policy = useTransfer
+
+        self.transfer_wm = self.wm
+        self.wm = WorldModel(self.obs_space, self.act_space, self.config, name="wm")
+
+        self.transfer_behavior = self.task_behavior
+        self.task_behavior = getattr(behaviors, self.config.task_behavior)(
+            self.wm, self.act_space, self.config, name="task_behavior"
+        )
+
+
+class WorldModel(nj.Module):
+    # 1) encoder: map raw observations to a latent state; 2) rssm: predict latent states based on past states and actions; 3) heads(task-specific outputs for decoding and prediction): decoder for reconstruction, reward for reward prediction, cont for termination prediction
+    def __init__(self, obs_space, act_space_action, config):
+        self.obs_space = obs_space
+        self.act_space = act_space_action
+        self.config = config
+        shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
+        shapes = {k: v for k, v in shapes.items() if not k.startswith("log_")}
+        self.encoder = nets.MultiEncoder(shapes, **config.encoder, name="enc")
+        self.rssm = nets.RSSM(**config.rssm, name="rssm")
+        # A dictionary of task-specific output heads (e.g., reward prediction, value estimation, policy).
+        self.heads = {
+            "decoder": nets.MultiDecoder(shapes, **config.decoder, name="dec"),
+            "reward": nets.MLP((), **config.reward_head, name="rew"),
+            "cont": nets.MLP((), **config.cont_head, name="cont"),
+        }
+        self.opt = jaxutils.Optimizer(name="model_opt", **config.model_opt)
+        scales = self.config.loss_scales.copy()
+        image, vector = scales.pop("image"), scales.pop("vector")
+        scales.update({k: image for k in self.heads["decoder"].cnn_shapes})
+        scales.update({k: vector for k in self.heads["decoder"].mlp_shapes})
+        self.scales = scales
+
+    def initial(self, batch_size):
+        prev_latent = self.rssm.initial(batch_size)
+        prev_action = jnp.zeros((batch_size, *self.act_space.shape))
+        return prev_latent, prev_action
+
+    def train(self, data, state):
+        # Modules is a list of model components (e.g., encoder, rssm, and heads) that need to be optimized.
+        modules = [self.encoder, self.rssm, *self.heads.values()]
+        # Optimize the model components using the loss function.
+        mets, (state, outs, metrics) = self.opt(
+            modules, self.loss, data, state, has_aux=True
+        )
+        metrics.update(mets)
+        return state, outs, metrics
+
+    def loss(self, data, state):
+        # --- Encoding ---
+        embed = self.encoder(data)  # float16[16,64,12288]
+        prev_latent, prev_action = state
+        prev_actions = jnp.concatenate(
+            [prev_action[:, None], data["action"][:, :-1]], 1
+        )
+        post, prior = self.rssm.observe(
+            embed, prev_actions, data["is_first"], prev_latent
+        )  # RSSM forward pass
+
+        # --- Reconstruction ---
+        dists = {}
+        feats = {**post, "embed": embed}
+        # decoder: image; reward: output float32[16,64,255] distribution; cont: IndependentBernoulli [16,64]
+        for name, head in self.heads.items():
+            out = head(feats if name in self.config.grad_heads else sg(feats))
+            out = out if isinstance(out, dict) else {name: out}
+            dists.update(out)
+
+        # --- Losses ---
+        losses = {}
+        # Dynamic loss: how well the prior matches the posterior (KL divergence)
+        losses["dyn"] = self.rssm.dyn_loss(post, prior, **self.config.dyn_loss)
+        # Representation loss: how well the latent state can be predicted from the observation
+        losses["rep"] = self.rssm.rep_loss(post, prior, **self.config.rep_loss)
+        # Reconstruction loss: how well the observation can be predicted from the latent state
+        for key, dist in dists.items():
+            loss = -dist.log_prob(data[key].astype(jnp.float32))
+            assert loss.shape == embed.shape[:2], (key, loss.shape)
+            losses[key] = loss
+        scaled = {k: v * self.scales[k] for k, v in losses.items()}
+        model_loss = sum(scaled.values())  # float32[16,64]
+
+        # --- Metrics ---
+        out = {"embed": embed, "post": post, "prior": prior}
+        out.update({f"{k}_loss": v for k, v in losses.items()})
+        last_latent = {k: v[:, -1] for k, v in post.items()}
+        last_action = data["action"][:, -1]
+        state = last_latent, last_action
+        # Updates the metrics dictionary with the model loss and the output dictionary
+        # dists: image, reward, cont
+        # losses: dyn, rep, image, reward, cont
+        metrics = self._metrics(data, dists, post, prior, losses, model_loss)
+        return model_loss.mean(), (state, out, metrics)
+
+    def imagine(self, policy, start, horizon):
+        first_cont = (1.0 - start["is_terminal"]).astype(
+            jnp.float32
+        )  # represents whether the episode can continue (1.0) or has ended (0.0)
+        keys = list(self.rssm.initial(1).keys())
+        start = {k: v for k, v in start.items() if k in keys}
+        start["action"] = policy(start)
+
+        def step(prev, _):
+            prev = prev.copy()
+            state = self.rssm.img_step(prev, prev.pop("action"))
+            return {**state, "action": policy(state)}
+
+        traj = jaxutils.scan(
+            step, jnp.arange(horizon), start, self.config.imag_unroll
+        )  # jaxutils.scan efficiently loops over the step function for horizon steps.
+        traj = {
+            k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()
+        }  # Adds the initial state to the beginning of the trajectory for completeness.
+        cont = self.heads["cont"](
+            traj
+        ).mode()  # self.heads["cont"] predicts if the episode should continue at each step.
+        traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
+
+        discount = 1 - 1 / self.config.horizon
+        traj["weight"] = (
+            jnp.cumprod(discount * traj["cont"], 0) / discount
+        )  # accumulates these discounts, modulated by continuation probability
+        return traj
+
+    def report(self, data):
+        state = self.initial(len(data["is_first"]))
+        report = {}
+        report.update(self.loss(data, state)[-1][-1])
+        context, _ = self.rssm.observe(
+            self.encoder(data)[:6, :5], data["action"][:6, :5], data["is_first"][:6, :5]
+        )  # slices the batch and time dimensions to limit computation to a small subset (for visualization/reporting)
+        start = {k: v[:, -1] for k, v in context.items()}
+        recon = self.heads["decoder"](
+            context
+        )  # dist float32[6,5,64,64,3] # Decodes the posterior latent states (context) back into observation space to measure how well the model can reconstruct inputs.
+        openl = self.heads["decoder"](
+            self.rssm.imagine(data["action"][:6, 5:], start)
+        )  # Uses the RSSM to imagine future latent states (self.rssm.imagine) given future actions
+        for key in self.heads["decoder"].cnn_shapes.keys():
+            truth = data[key][:6].astype(jnp.float32)  # float32[6,64,64,64,3]
+            model = jnp.concatenate([recon[key].mode()[:, :5], openl[key].mode()], 1)
+            error = (model - truth + 1) / 2  # float32[6,64,64,64,3]
+            video = jnp.concatenate([truth, model, error], 2)
+            report[f"openl_{key}"] = jaxutils.video_grid(video)
+        return report
+
+    def _metrics(self, data, dists, post, prior, losses, model_loss):
+        # Defines a lambda function to calculate entropy for a given feature using the model's distribution
+        entropy = lambda feat: self.rssm.get_dist(feat).entropy()
+
+        # Metrics for the prior and posterior entropy
+        metrics = {}
+        # Computes entropy statistics for the prior and posterior distributions
+        metrics.update(jaxutils.tensorstats(entropy(prior), "prior_ent"))
+        metrics.update(jaxutils.tensorstats(entropy(post), "post_ent"))
+
+        # Computes the mean and standard deviation of the model loss (across batch and time steps)
+        metrics.update({f"{k}_loss_mean": v.mean() for k, v in losses.items()})
+        metrics.update({f"{k}_loss_std": v.std() for k, v in losses.items()})
+        metrics["model_loss_mean"] = model_loss.mean()
+        metrics["model_loss_std"] = model_loss.std()
+
+        # Measures the maximum absolute reward value from the real data and the predicted reward distribution.
+        metrics["reward_max_data"] = jnp.abs(data["reward"]).max()
+        metrics["reward_max_pred"] = jnp.abs(dists["reward"].mean()).max()
+
+        # Balance statistics for the reward and continuous distributions
+        if "reward" in dists and not self.config.jax.debug_nans:
+            stats = jaxutils.balance_stats(dists["reward"], data["reward"], 0.1)
+            metrics.update({f"reward_{k}": v for k, v in stats.items()})
+        if "cont" in dists and not self.config.jax.debug_nans:
+            stats = jaxutils.balance_stats(dists["cont"], data["cont"], 0.5)
+            metrics.update({f"cont_{k}": v for k, v in stats.items()})
+        return metrics
+
+
+class ImagActorCritic(nj.Module):
+
+    def __init__(self, critics, scales, act_space, config):
+        critics = {k: v for k, v in critics.items() if scales[k]}
+        for key, scale in scales.items():
+            assert not scale or key in critics, key
+        self.critics = {k: v for k, v in critics.items() if scales[k]}
+        self.scales = scales
+        self.act_space = act_space
+        self.config = config
+        disc = act_space.discrete
+        self.grad = config.actor_grad_disc if disc else config.actor_grad_cont
+        self.actor = nets.MLP(
+            name="actor",
+            dims="deter",
+            shape=act_space.shape,
+            **config.actor,
+            dist=config.actor_dist_disc if disc else config.actor_dist_cont,
+        )
+        self.retnorms = {
+            k: jaxutils.Moments(**config.retnorm, name=f"retnorm_{k}") for k in critics
+        }
+        self.opt = jaxutils.Optimizer(name="actor_opt", **config.actor_opt)
+
+    def initial(self, batch_size):
+        return {}
+
+    def policy(self, state, carry):
+        return {"action": self.actor(state)}, carry
+
+    def get_actor_logits(self, state):
+        return self.actor.get_logits(state)
+
+    def get_actor_dist(self, logits):
+        return self.actor.get_distribution(logits)
+
+    def train(self, imagine, start, context):
+        # These trajectories are used to compute losses for both the actor and critic networks.
+        # The actor is trained to maximize expected returns in the imagined rollouts.
+        # Critics are trained to evaluate the imagined states and actions.
+        def loss(start):
+            policy = lambda s: self.actor(sg(s)).sample(seed=nj.rng())
+            traj = imagine(policy, start, self.config.imag_horizon)
+            loss, metrics = self.loss(traj)
+            return loss, (traj, metrics)
+
+        # Optimizes the actor using the loss function
+        mets, (traj, metrics) = self.opt(self.actor, loss, start, has_aux=True)
+        metrics.update(mets)
+
+        # Trains the critics using the imagined trajectories
+        for key, critic in self.critics.items():
+            mets = critic.train(traj, self.actor)
+            metrics.update({f"{key}_critic_{k}": v for k, v in mets.items()})
+        return traj, metrics
+
+    def loss(self, traj):
+        # traj: ['action', 'deter', 'logit', 'stoch', 'cont', 'weight'] [16,1024,n]
+        # Stores performance metrics.
+        metrics = {}
+        advs = []
+        total = sum(self.scales[k] for k in self.critics)
+
+        # Computes the advantage for each critic and scales it by the total advantage.
+        for key, critic in self.critics.items():
+            # Computes the reward, return, and baseline values for the critic.
+            rew, ret, base = critic.score(traj, self.actor)  # float32[15,1024]
+            offset, invscale = self.retnorms[key](ret)
+            normed_ret = (ret - offset) / invscale
+            normed_base = (base - offset) / invscale
+            # Measure how much better the action performed compared to the baseline
+            advs.append((normed_ret - normed_base) * self.scales[key] / total)
+            metrics.update(jaxutils.tensorstats(rew, f"{key}_reward"))
+            metrics.update(jaxutils.tensorstats(ret, f"{key}_return_raw"))
+            metrics.update(jaxutils.tensorstats(normed_ret, f"{key}_return_normed"))
+            metrics[f"{key}_return_rate"] = (jnp.abs(ret) >= 0.5).mean()
+        # Combine the advantages from all critics
+        adv = jnp.stack(advs).sum(0)  # float32[15,1024]
+
+        # Policy evaluation
+        # Computes the log probability of the action taken by the actor
+        policy = self.actor(sg(traj))  # [16, 1024] event_shape=[7]
+        logpi = policy.log_prob(sg(traj["action"]))[:-1]
+        # adv: deterministic or differentiable policies where the action distribution is differentiable with respect to the policy parameters
+        #       The policy is updated to increase the probability of actions that have positive advantages and decrease the probability of actions with negative advantages.
+        # reinforce: stochastic or non-differentiable policies where actions are sampled from a distribution
+        #       policy gradient method that scales the log probability of the action by the advantage
+        loss = {"backprop": -adv, "reinforce": -logpi * sg(adv)}[self.grad]
+        # Policy entropy encourages exploration by penalizing low entropy
+        ent = policy.entropy()[:-1]
+        loss -= self.config.actent * ent
+
+        # Loss scaling
+        # Trajectory Weights (traj["weight"]) discount the loss over time.
+        loss *= sg(traj["weight"])[:-1]
+        loss *= self.config.loss_scales.actor
+        metrics.update(self._metrics(traj, policy, logpi, ent, adv))
+        return loss.mean(), metrics
+
+    def _metrics(self, traj, policy, logpi, ent, adv):
+        metrics = {}
+        ent = policy.entropy()[:-1]
+        rand = (ent - policy.minent) / (policy.maxent - policy.minent)
+        rand = rand.mean(range(2, len(rand.shape)))
+        act = traj["action"]
+        act = jnp.argmax(act, -1) if self.act_space.discrete else act
+        metrics.update(jaxutils.tensorstats(act, "action"))
+        metrics.update(jaxutils.tensorstats(rand, "policy_randomness"))
+        metrics.update(jaxutils.tensorstats(ent, "policy_entropy"))
+        metrics.update(jaxutils.tensorstats(logpi, "policy_logprob"))
+        metrics.update(jaxutils.tensorstats(adv, "adv"))
+        metrics["imag_weight_dist"] = jaxutils.subsample(traj["weight"])
+        return metrics
+
+
+class VFunction(nj.Module):
+
+    def __init__(self, rewfn, config):
+        self.rewfn = rewfn
+        self.config = config
+        self.net = nets.MLP((), name="net", dims="deter", **self.config.critic)
+        self.slow = nets.MLP((), name="slow", dims="deter", **self.config.critic)
+        self.updater = jaxutils.SlowUpdater(
+            self.net,
+            self.slow,
+            self.config.slow_critic_fraction,
+            self.config.slow_critic_update,
+        )
+        self.opt = jaxutils.Optimizer(name="critic_opt", **self.config.critic_opt)
+
+    def train(self, traj, actor):
+        target = sg(self.score(traj)[1])
+        mets, metrics = self.opt(self.net, self.loss, traj, target, has_aux=True)
+        metrics.update(mets)
+        self.updater()
+        return metrics
+
+    def loss(self, traj, target):
+        metrics = {}
+        traj = {k: v[:-1] for k, v in traj.items()}
+        dist = self.net(traj)
+        loss = -dist.log_prob(sg(target))
+        if self.config.critic_slowreg == "logprob":
+            reg = -dist.log_prob(sg(self.slow(traj).mean()))
+        elif self.config.critic_slowreg == "xent":
+            reg = -jnp.einsum(
+                "...i,...i->...", sg(self.slow(traj).probs), jnp.log(dist.probs)
+            )
+        else:
+            raise NotImplementedError(self.config.critic_slowreg)
+        loss += self.config.loss_scales.slowreg * reg
+        loss = (loss * sg(traj["weight"])).mean()
+        loss *= self.config.loss_scales.critic
+        metrics = jaxutils.tensorstats(dist.mean())
+        return loss, metrics
+
+    def score(self, traj, actor=None):
+        # Immediate rewards
+        rew = self.rewfn(traj)
+        assert (
+            len(rew) == len(traj["action"]) - 1
+        ), "should provide rewards for all but last action"
+        # Discounted returns
+        discount = 1 - 1 / self.config.horizon
+        disc = traj["cont"][1:] * discount
+        # Value estimates
+        value = self.net(traj).mean()
+        vals = [value[-1]]
+        # Immediate return
+        interm = rew + disc * value[1:] * (1 - self.config.return_lambda)
+
+        # This loop iterates backward through time to compute the full return:
+        # Adds intermediate rewards.
+        # Recursively includes the discounted future return, weighted by lambda.
+        for t in reversed(range(len(disc))):
+            vals.append(interm[t] + disc[t] * self.config.return_lambda * vals[-1])
+        ret = jnp.stack(list(reversed(vals))[:-1])
+        return rew, ret, value[:-1]

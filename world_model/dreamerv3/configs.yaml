@@ -1,0 +1,1133 @@
+defaults:
+
+  seed: 0
+  method: name
+  task: dummy_disc
+  logdir: /dev/null
+  replay: uniform
+  replay_size: 1e6
+  replay_online: False
+  eval_dir: ''
+  filter: '.*'
+
+  jax:
+    platform: gpu
+    jit: True
+    precision: float16
+    prealloc: True
+    debug_nans: False
+    logical_cpus: 0
+    debug: False
+    policy_devices: [0]
+    train_devices: [0]
+    metrics_every: 10
+
+  run:
+    script: train
+    steps: 1e10
+    expl_until: 0 
+    log_every: 300 # Note: This is in seconds, not steps!!!
+    save_every: 900 # Note: This is in seconds, not steps!!!
+    eval_every: 1e6 # Note: This is in steps
+    eval_initial: True
+    eval_eps: 1
+    eval_samples: 1
+    train_ratio: 32.0
+    train_fill: 0
+    eval_fill: 0
+    log_zeros: False
+    log_keys_video: [image]
+    log_keys_sum: '^$'
+    log_keys_mean: '(log_entropy)'
+    log_keys_max: '^$'
+    from_checkpoint: ''
+    sync_every: 10
+    # actor_addr: 'tcp://127.0.0.1:5551'
+    actor_addr: 'ipc:///tmp/5551'
+    actor_batch: 32
+    obs_intrinsic: 'nan'
+    intr_reward_coeff: 0.0025
+    latents_intrinsic: 'nan'
+    hash_bits: 128
+    transfer: False
+    finetune: False
+    ignore_extr_reward: False
+
+  envs: {amount: 4, parallel: process, length: 0, reset: True, restart: True, discretize: 0, checks: False}
+  wrapper: {length: 0, reset: True, discretize: 0, checks: False}
+  env:
+    # FIXME(sam): 64x64 is too small for the biggest minigrid envs, like 4 rooms
+    minigrid: {size: [64, 64], fully_observable: false, pixel_input: true, hide_mission: true}
+
+  # Agent
+  task_behavior: Greedy
+  expl_behavior: None
+  batch_size: 16
+  batch_length: 64
+  data_loaders: 8
+
+  # World Model
+  grad_heads: [decoder, reward, cont]
+  rssm: {deter: 4096, units: 1024, stoch: 32, classes: 32, act: silu, norm: layer, initial: learned, unimix: 0.01, unroll: False, action_clip: 1.0, winit: normal, fan: avg}
+  encoder: {mlp_keys: '.*', cnn_keys: '.*', act: silu, norm: layer, mlp_layers: 5, mlp_units: 1024, cnn: resnet, cnn_depth: 96, cnn_blocks: 0, resize: stride, winit: normal, fan: avg, symlog_inputs: True, minres: 4}
+  decoder: {mlp_keys: '.*', cnn_keys: '.*', act: silu, norm: layer, mlp_layers: 5, mlp_units: 1024, cnn: resnet, cnn_depth: 96, cnn_blocks: 0, image_dist: mse, vector_dist: symlog_mse, inputs: [deter, stoch], resize: stride, winit: normal, fan: avg, outscale: 1.0, minres: 4, cnn_sigmoid: False}
+  reward_head: {layers: 5, units: 1024, act: silu, norm: layer, dist: symlog_disc, outscale: 0.0, outnorm: False, inputs: [deter, stoch], winit: normal, fan: avg, bins: 255}
+  cont_head: {layers: 5, units: 1024, act: silu, norm: layer, dist: binary, outscale: 1.0, outnorm: False, inputs: [deter, stoch], winit: normal, fan: avg}
+  loss_scales: {image: 1.0, vector: 1.0, reward: 1.0, cont: 1.0, dyn: 0.5, rep: 0.1, actor: 1.0, critic: 1.0, slowreg: 1.0}
+  dyn_loss: {impl: kl, free: 1.0}
+  rep_loss: {impl: kl, free: 1.0}
+  model_opt: {opt: adam, lr: 1e-4, eps: 1e-8, clip: 1000.0, wd: 0.0, warmup: 0, lateclip: 0.0}
+
+  # Actor Critic
+  actor: {layers: 5, units: 1024, act: silu, norm: layer, minstd: 0.1, maxstd: 1.0, outscale: 1.0, outnorm: False, unimix: 0.01, inputs: [deter, stoch], winit: normal, fan: avg, symlog_inputs: False}
+  critic: {layers: 5, units: 1024, act: silu, norm: layer, dist: symlog_disc, outscale: 0.0, outnorm: False, inputs: [deter, stoch], winit: normal, fan: avg, bins: 255, symlog_inputs: False}
+  actor_opt: {opt: adam, lr: 3e-5, eps: 1e-5, clip: 100.0, wd: 0.0, warmup: 0, lateclip: 0.0}
+  critic_opt: {opt: adam, lr: 3e-5, eps: 1e-5, clip: 100.0, wd: 0.0, warmup: 0, lateclip: 0.0}
+  actor_dist_disc: onehot
+  actor_dist_cont: normal
+  actor_grad_disc: reinforce
+  actor_grad_cont: backprop
+  critic_type: vfunction
+  imag_horizon: 15
+  imag_unroll: False
+  horizon: 333
+  return_lambda: 0.95
+  critic_slowreg: logprob
+  slow_critic_update: 1
+  slow_critic_fraction: 0.02
+  retnorm: {impl: perc_ema, decay: 0.99, max: 1.0, perclo: 5.0, perchi: 95.0}
+  actent: 3e-4
+
+  # Exploration
+  expl_rewards: {extr: 1.0, disag: 0.1}
+  expl_opt: {opt: adam, lr: 1e-4, eps: 1e-5, clip: 100.0, wd: 0.0, warmup: 0}
+  disag_head: {layers: 5, units: 1024, act: silu, norm: layer, dist: mse, outscale: 1.0, inputs: [deter, stoch, action], winit: normal, fan: avg}
+  disag_target: [stoch]
+  disag_models: 8
+
+minigrid-test:
+  task: minigrid_Unlock
+  envs.amount: 2
+  run:
+    script: train_eval
+    steps: 3e3
+    eval_every: 1e3
+    train_ratio: 64
+    log_every: 500
+    save_every: 1e3
+    eval_initial: True
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_sum
+    ignore_extr_reward: True
+    intr_reward_coeff: 0.0025
+    transfer: True
+  rssm.initial: zeros
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+###############################################################################
+crafter-transfer-infogain:
+  task: crafter_reward
+  envs.amount: 8
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsinfogain
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-transfer-extrinsic-seed42:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-transfer-extrinsic:
+  task: crafter_reward
+  envs.amount: 8
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-finetune-extrinsic:
+  task: crafter_reward
+  envs.amount: 8
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0
+    transfer: False
+    finetune: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-finetune-infogain-replaybuffer20000:
+  task: crafter_reward
+  envs.amount: 8
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsinfogain
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: False
+    finetune: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-extrinsic-plus-infogain:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: latentsinfogain
+    ignore_extr_reward: False
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-novelty-replaybuffer20000:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: latentsnoveltyperstatefactorized
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-none-replaybuffer20000: # random agent, no intrinsic or extrinsic reward
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: True
+    intr_reward_coeff: 0
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-extrinsic-replaybuffer20000:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+
+crafter-pretrain-extrinsic:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-empowerment-replaybuffer20000:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: latentsempowerment
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-empowerment:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: latentsempowerment
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-infogain-replaybuffer20000:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: latentsinfogain
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-infogain:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: latentsinfogain
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-infogain-empowerment-mul:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_mul
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+crafter-pretrain-infogain-empowerment-mean:
+  task: crafter_reward
+  envs.amount: 8
+  seed: 42 # Constant during pre-training as we want to test generalization
+  run:
+    log_keys_max: '^log_achievement_.*'
+    log_keys_sum: '^log_reward$'
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    train_ratio: 64
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_mean
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  decoder: {mlp_keys: '$^', cnn_keys: 'image'}
+
+###############################################################################
+minigrid-pretrain-mixedenvwithgoalinstartingcorner-extrinsic: # only used to test whether extrinsic reward is working
+  task: minigrid_MixedEnvWithGoalInStartingCorner
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+# random
+minigrid-pretrain-mixedenv-none:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-extrinsic-replaybuffer20000:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-novelty-replaybuffer20000:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsnoveltyperstatefactorized
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-novelty:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsnoveltyperstatefactorized
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-empowerment:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsempowerment
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-empowerment-replaybuffer20000:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsempowerment
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-infogain:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsinfogain
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-infogain-replaybuffer20000:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsinfogain
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-infogain-empowerment-mul:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_mul
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-infogain-empowerment-mul-replaybuffer20000:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_mul
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-infogain-empowerment-mean:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_mean
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-infogain-empowerment-mean-replaybuffer20000:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  replay_size: 20000 # Note: Replay Buffer must be large enough that batch_size * batch_length = 1024 <= replay_size, otherwise should_train will be False. Additionally, if train_eval is used, the replay buffer is divided by 10, so it needs to be larger than 10240.
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_mean
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-mixedenv-old:
+  task: minigrid_MixedEnv
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: latentsinfogain
+    ignore_extr_reward: True
+    intr_reward_coeff: 1
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-transfer-mixedenv-extrinsic-smallreplaybuffer:
+  task: minigrid_MixedEnv
+
+  run:
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-transfer-mixedenv:
+  task: minigrid_MixedEnv
+  run:
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-pretrain-static-harmless:
+  task: minigrid_SafeDistShift1
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_sum
+    ignore_extr_reward: True
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-transfer-static-harmless:
+  task: minigrid_SafeDistShift2
+  run:
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+
+
+
+minigrid-pretrain-dynamic-harmless:
+  task: minigrid_Dynamic-Walls-16x16
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_sum
+    ignore_extr_reward: True
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-transfer-dynamic-harmless:
+  task: minigrid_Dynamic-Walls-8x8
+  run:
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+
+
+###############################################################################
+minigrid-pretrain-obs-wall:
+  task: minigrid_SimpleCrossingS9N1
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_sum
+    ignore_extr_reward: True
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-transfer-wall:
+  task: minigrid_SimpleCrossingS9N2
+  run:
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+
+minigrid-pretrain-obs-lava:
+  task: minigrid_DistShift1
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_sum
+    ignore_extr_reward: True
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-transfer-lava:
+  task: minigrid_DistShift2
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+
+minigrid-pretrain-obs-dynamics:
+  task: minigrid_Dynamic-Obstacles-16x16
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_sum
+    ignore_extr_reward: True
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-transfer-dynamics:
+  task: minigrid_Dynamic-Obstacles-8x8
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+
+minigrid-pretrain-obs-walllava:
+  task: minigrid_LavaCrossingS9N1
+  envs.amount: 8
+  run:
+    script: train_eval
+    steps: 1.02e6
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: infogain_empowerment_sum
+    ignore_extr_reward: True
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+minigrid-transfer-walllava:
+  task: minigrid_LavaCrossingS9N2
+  run:
+    script: train_eval
+    steps: 5.02e5 # Number of additional steps after pretraining (e.g. if pretraining was 1.02e6, the agent will have trained for 1.52e6 in total after this)
+    eval_every: 1e4
+    train_ratio: 64
+    log_every: 1000
+    eval_initial: True
+    eval_eps: 8
+    eval_samples: 1
+    obs_intrinsic: nan
+    latents_intrinsic: nan
+    ignore_extr_reward: False
+    intr_reward_coeff: 0.0025
+    transfer: True
+  encoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+  decoder: {mlp_keys: 'direction', cnn_keys: 'image'}
+
+
+small:
+  rssm.deter: 512
+  .*\.cnn_depth: 32
+  .*\.units: 512
+  .*\.layers: 2
+
+medium:
+  rssm.deter: 1024
+  .*\.cnn_depth: 48
+  .*\.units: 640
+  .*\.layers: 3
+
+large:
+  rssm.deter: 2048
+  .*\.cnn_depth: 64
+  .*\.units: 768
+  .*\.layers: 4
+
+xlarge:
+  rssm.deter: 4096
+  .*\.cnn_depth: 96
+  .*\.units: 1024
+  .*\.layers: 5
+
+multicpu:
+
+  jax:
+    logical_cpus: 8
+    policy_devices: [0, 1]
+    train_devices: [2, 3, 4, 5, 6, 7]
+  run:
+    actor_batch: 4
+  envs:
+    amount: 8
+  batch_size: 12
+  batch_length: 10
+
+debug:
+
+  jax: {jit: True, prealloc: False, debug: True, platform: cpu}
+  envs: {restart: False, amount: 1}
+  wrapper: {length: 100, checks: True}
+  run:
+    eval_every: 1000
+    log_every: 5
+    save_every: 10
+    train_ratio: 32
+    actor_batch: 2
+  batch_size: 8
+  batch_length: 12
+  replay_size: 1e5
+  encoder.cnn_depth: 8
+  decoder.cnn_depth: 8
+  rssm: {deter: 32, units: 16, stoch: 4, classes: 4}
+  .*unroll: False
+  .*\.layers: 2
+  .*\.units: 16
+  .*\.wd$: 0.0
