@@ -114,51 +114,7 @@ def visualize_mutual_info_calculation(current_state,
     plt.tight_layout()
     return fig
 
-# Example usage:
-def test_mutual_info_visualization():
-    # Create example distributions
-    num_actions = 4
-    num_states = 5
-    
-    # Example: Create transition probabilities where each action leads
-    # deterministically to a different state
-    # => Maximum empowerment
-    p_next_state_given_state_action = np.zeros((num_actions, num_states))
-    for i in range(num_actions):
-        p_next_state_given_state_action[i, i] = 1.0
-    
-    # Example: Uniform policy
-    p_action_given_state = np.ones(num_actions) / num_actions
-    
-    # Example: Custom names
-    action_names = ['Up', 'Right', 'Down', 'Left']
-    state_names = ['s0', 's1', 's2', 's3', 's4']
-    
-    # Create visualization
-    visualize_mutual_info_calculation(
-        current_state=0,
-        p_next_state_given_state_action=p_next_state_given_state_action,
-        p_action_given_state=p_action_given_state,
-        action_names=action_names,
-        state_names=state_names
-    )
-    plt.show()
-    
-    # Example: Create transition probabilities where each action is 
-    # equally likely to lead to any state, i.e. completely stochastic
-    # => Zero empowerment
-    p_next_state_given_state_action = np.ones((num_actions, num_states)) / num_states
-    
-    # Again, same uniform policy and names
-    # Create visualization
-    visualize_mutual_info_calculation(
-        current_state=0,
-        p_next_state_given_state_action=p_next_state_given_state_action,
-        p_action_given_state=p_action_given_state,
-        action_names=action_names,
-        state_names=state_names
-    )
-    
+
 def plot_gridworld_and_heatmap(env, heatmap, title, colorbar_label, ax=None):
     # Set NaN values to grey in the colormap
     cmap = mpl.colormaps.get_cmap('viridis')  # viridis is the default colormap for imshow
@@ -173,7 +129,7 @@ def plot_gridworld_and_heatmap(env, heatmap, title, colorbar_label, ax=None):
         # minor ticks are not enabled by default, so we need to enable them
         plt.gca().set_xticks(np.arange(-.5, env.width, 1), minor=True)
         plt.gca().set_yticks(np.arange(-.5, env.height, 1), minor=True)
-        plt.gca().grid(which="minor", color="black", linestyle='-', linewidth=1)
+        # plt.gca().grid(which="minor", color="black", linestyle='-', linewidth=1)
         
         plt.colorbar(label=colorbar_label)
         plt.title(title)

@@ -2,7 +2,7 @@ from collections import defaultdict
 import numpy as np
 
 from info_gain import calculate_predicted_information_gain_for_state_action_pair, compute_information_gain_for_all_states
-from empowerment import compute_empowerment_for_all_states, compute_empowerment_for_state
+from intrinsic.empowerment import compute_empowerment_for_all_states, compute_empowerment_for_state
 from novelty import compute_novelty_for_state, compute_novelty_for_all_states
 from reward_scaler import GlobalRewardScaler
 

@@ -8,7 +8,7 @@ import numpy as np
 
 from environment import get_all_states, get_ground_truth_transition_probabilities
 from info_gain import calculate_predicted_information_gain_for_state_action_pair, compute_information_gain_for_all_states
-from empowerment import compute_empowerment_for_all_states, compute_empowerment_for_state
+from intrinsic.empowerment import compute_empowerment_for_all_states, compute_empowerment_for_state
 from novelty import compute_novelty_for_state
 from profiler import create_profiler
 
