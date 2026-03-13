@@ -175,3 +175,31 @@ def plot_gridworld_and_heatmap(env, heatmap, title, colorbar_label, ax=None):
             ax.text(x, y, 'O', color='white', ha='center', va='center', fontsize=30)
         
         return ax
+
+def plot_learning_curves(history):
+    """Plot learning curves showing state/action discovery and transition model error over time."""
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 4))
+    
+    # Plot state discovery
+    eval_steps = history['eval_steps']
+    ax1.plot(eval_steps, history['visited_states'], label='States')
+    ax1.set_xlabel('Steps')
+    ax1.set_ylabel('# States')
+    ax1.legend()
+    ax1.set_title('Total Discovered States')
+    
+    # Plot episode count (if the agent is actually learning, it should die less often, so this should flatten out)
+    ax2.plot(eval_steps, history['eval_episodes'])
+    ax2.set_xlabel('Steps')
+    ax2.set_ylabel('Episodes')
+    ax2.set_title('Episodes')
+    
+    # Plot average error over time
+    errors = history['errors']
+    ax3.plot(eval_steps, errors)
+    ax3.set_xlabel('Steps')
+    ax3.set_ylabel('Average Error')
+    ax3.set_title('Transition Model Error')
+        
+    plt.tight_layout()
+    return fig

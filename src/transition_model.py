@@ -23,9 +23,8 @@ from collections import defaultdict
 
 from intrinsic.info_gain import (
     calculate_predicted_information_gain_for_state_action_pair,
-    compute_information_gain_for_all_states,
 )
-from intrinsic.empowerment import compute_empowerment_for_all_states, compute_empowerment_for_state
+from intrinsic.empowerment import compute_empowerment_for_state
 from intrinsic.novelty import compute_novelty_for_state, compute_novelty_for_all_states
 from reward_scaler import GlobalRewardScaler
 
@@ -89,10 +88,44 @@ class CountBasedTransitionModel:
         self.reward_configs = reward_configs if reward_configs is not None else {}
 
         # Compute initial reward estimates under the prior model
-        self._initialize_intrinsic_rewards()
+        self.state_visit_counts = np.zeros(len(states), dtype=int)
+        self.visited_states = set()
+        self.discovery_order = []              # first time each state was discovered
+        self.state_visit_history = []          # every visited state in temporal order
+        self.discovery_timestep = {}           # state -> first timestep it was seen
+        self.total_state_visits = 0
 
+        self._initialize_intrinsic_rewards()
         self.is_true_model = is_true_model
 
+    def get_discovered_states(self):
+        return list(self.discovery_order)
+
+    def get_num_discovered_states(self) -> int:
+        return len(self.visited_states)
+
+    def has_visited_state(self, state) -> bool:
+        return state in self.visited_states
+
+    def get_state_visit_count(self, state) -> int:
+        return int(self.state_visit_counts[self.state_to_idx[state]])
+
+    def get_discovery_timestep(self, state):
+        return self.discovery_timestep.get(state, None)
+
+    def _record_state_visit(self, state) -> None:
+        s = self.state_to_idx[state]
+
+        self.state_visit_counts[s] += 1
+        self.state_visit_history.append(state)
+
+        if state not in self.visited_states:
+            self.visited_states.add(state)
+            self.discovery_order.append(state)
+            self.discovery_timestep[state] = self.total_state_visits
+
+        self.total_state_visits += 1
+        
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
@@ -102,8 +135,8 @@ class CountBasedTransitionModel:
         state,
         action: int,
         next_state,
-        extrinsic_reward: float,
-        terminated: bool,
+        extrinsic_reward: float = 0.0,
+        terminated: bool = False,
     ) -> None:
         """Record an observed transition and refresh intrinsic reward estimates.
 
@@ -117,6 +150,9 @@ class CountBasedTransitionModel:
         s = self.state_to_idx[state]
         a = action
         s_prime = self.state_to_idx[next_state]
+
+        # --- NEW: record visit to resulting state ---
+        self._record_state_visit(next_state)
 
         if not self.is_true_model:
             self.counts[s, a, s_prime] += self.update_strength

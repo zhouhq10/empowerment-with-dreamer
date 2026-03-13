@@ -44,7 +44,7 @@ class Agent(ABC):
         pass
 
     @abstractmethod
-    def update(self, state, action: int, next_state, reward: float, terminated: bool) -> None:
+    def update(self, state, action: int, next_state, reward: float, terminated: bool = False) -> None:
         """Update agent's internal state after a transition.
 
         Args:
@@ -71,7 +71,7 @@ class RandomAgent(Agent):
     def select_action(self, state) -> int:
         return np.random.choice(self.num_actions)
 
-    def update(self, state, action: int, next_state, reward: float, terminated: bool) -> None:
+    def update(self, state, action: int, next_state, reward: float, terminated: bool = False) -> None:
         # Random agent doesn't need to learn anything
         pass
 
@@ -167,7 +167,7 @@ class PrioritizedSweepingAgent(Agent):
         action = self.rng.choice(best_actions)
         return action
 
-    def update(self, state, action: int, next_state, reward: float, terminated: bool) -> None:
+    def update(self, state, action: int, next_state, reward: float, terminated: bool = False) -> None:
         """Update the transition model and run prioritized sweeping.
 
         Args:

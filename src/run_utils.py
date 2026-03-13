@@ -13,18 +13,23 @@ Two public functions are provided:
 from __future__ import annotations
 
 import os
-from copy import deepcopy
 import random
-
+import numpy as np
 import dill as pickle
 from tqdm import tqdm
-import numpy as np
+from copy import deepcopy
+
 
 from environment import get_all_states, get_ground_truth_transition_probabilities
-from info_gain import calculate_predicted_information_gain_for_state_action_pair, compute_information_gain_for_all_states
-from intrinsic.empowerment import compute_empowerment_for_all_states, compute_empowerment_for_state
-from novelty import compute_novelty_for_state
-from profiler import create_profiler
+from intrinsic.info_gain import (
+    calculate_predicted_information_gain_for_state_action_pair,
+    compute_information_gain_for_all_states,
+)
+from intrinsic.empowerment import (
+    compute_empowerment_for_all_states,
+    compute_empowerment_for_state,
+)
+from intrinsic.novelty import compute_novelty_for_state
 
 
 def run_agent(
@@ -85,20 +90,20 @@ def run_agent(
     env.reset(seed=seed)
 
     history: dict = {
-        'n_states': [],
-        'eval_steps': [],
-        'eval_episodes': [],
-        'empowerment_estimates': [],
-        'q_values_per_state': [],
-        'transition_model': [],
-        'info_gain_estimates': [],
-        'novelty_estimates': [],
-        'transitions': [],
-        'raw_rewards': {reward_type: [] for reward_type in rewards},
-        'scaled_rewards': {reward_type: [] for reward_type in rewards},
-        'agent_rewards': [],
-        'agent_rewards_through_model': [],
-        'agent_R': [],
+        "n_states": [],
+        "eval_steps": [],
+        "eval_episodes": [],
+        "empowerment_estimates": [],
+        "q_values_per_state": [],
+        "transition_model": [],
+        "info_gain_estimates": [],
+        "novelty_estimates": [],
+        "transitions": [],
+        "raw_rewards": {reward_type: [] for reward_type in rewards},
+        "scaled_rewards": {reward_type: [] for reward_type in rewards},
+        "agent_rewards": [],
+        "agent_rewards_through_model": [],
+        "agent_R": [],
     }
 
     if not known_state_space:
@@ -106,7 +111,9 @@ def run_agent(
 
     if use_true_model:
         print("Initializing model counts with ground truth probabilities.")
-        P_true, terminal_transitions, _ = get_ground_truth_transition_probabilities(env.unwrapped)
+        P_true, terminal_transitions, _ = get_ground_truth_transition_probabilities(
+            env.unwrapped
+        )
 
         # Convert ground-truth probabilities to high-confidence pseudo-counts
         # so that the Dirichlet posterior is sharply concentrated on the truth.
@@ -140,39 +147,48 @@ def run_agent(
         # Update agent (model counts + prioritized sweeping)
         agent.update(state, action, next_state, extrinsic_reward, terminated)
 
-        history['transitions'].append((state, action, next_state, extrinsic_reward, terminated, truncated))
+        history["transitions"].append(
+            (state, action, next_state, extrinsic_reward, terminated, truncated)
+        )
 
         # --- Evaluation checkpoint ---
         if step == next_eval:
-            history['n_states'].append(len(agent.model.observed_states))
-            history['eval_steps'].append(step)
-            history['eval_episodes'].append(episode)
-            history['transition_model'].append(deepcopy(agent.model))
+            history["n_states"].append(len(agent.model.observed_states))
+            history["eval_steps"].append(step)
+            history["eval_episodes"].append(episode)
+            history["transition_model"].append(deepcopy(agent.model))
 
-            if agent.__class__.__name__ in ('QAgent', 'PrioritizedSweepingAgent'):
+            if agent.__class__.__name__ in ("QAgent", "PrioritizedSweepingAgent"):
                 # Q-values reshaped to (width, height, 4_dirs, num_actions)
                 q_values = np.full(
-                    (env.unwrapped.width, env.unwrapped.height, 4, agent.num_actions), np.nan
+                    (env.unwrapped.width, env.unwrapped.height, 4, agent.num_actions),
+                    np.nan,
                 )
                 for s in agent.model.observed_states:
                     x, y, dir = s
                     q_values[x, y, dir] = agent.q_table[agent.state_to_idx[s]]
-                history['q_values_per_state'].append(q_values)
+                history["q_values_per_state"].append(q_values)
 
                 # Mean reward per (state, action) – averaged over next-states
                 agent_rewards = np.full(
-                    (env.unwrapped.width, env.unwrapped.height, 4, agent.num_actions), np.nan
+                    (env.unwrapped.width, env.unwrapped.height, 4, agent.num_actions),
+                    np.nan,
                 )
                 for s in agent.model.observed_states:
                     x, y, dir = s
-                    agent_rewards[x, y, dir] = agent.model.R[agent.state_to_idx[s]].mean(axis=1)
-                history['agent_rewards'].append(agent_rewards)
+                    agent_rewards[x, y, dir] = agent.model.R[
+                        agent.state_to_idx[s]
+                    ].mean(axis=1)
+                history["agent_rewards"].append(agent_rewards)
 
                 # Expected reward under the model: Σ_{s'} p(s'|s,a) · R(s,a,s')
                 agent_rewards_through_model = np.full(
-                    (env.unwrapped.width, env.unwrapped.height, 4, agent.num_actions), np.nan
+                    (env.unwrapped.width, env.unwrapped.height, 4, agent.num_actions),
+                    np.nan,
                 )
-                learned_matrix, learned_state_to_idx = agent.model.get_full_transition_matrix()
+                learned_matrix, learned_state_to_idx = (
+                    agent.model.get_full_transition_matrix()
+                )
                 for s in agent.model.observed_states:
                     x, y, dir = s
                     state_idx = agent.state_to_idx[s]
@@ -180,23 +196,29 @@ def run_agent(
                         agent_rewards_through_model[x, y, dir, a] = np.dot(
                             learned_matrix[state_idx, a], agent.model.R[state_idx, a]
                         )
-                history['agent_rewards_through_model'].append(agent_rewards_through_model)
+                history["agent_rewards_through_model"].append(
+                    agent_rewards_through_model
+                )
 
             # Compute and store predicted information gain
             cfg = agent.model.reward_configs.get("info_gain", {})
-            predicted_info_gain = compute_information_gain_for_all_states(env, agent.model, **cfg)
-            history['info_gain_estimates'].append(predicted_info_gain)
+            predicted_info_gain = compute_information_gain_for_all_states(
+                env, agent.model, **cfg
+            )
+            history["info_gain_estimates"].append(predicted_info_gain)
 
             # Compute and store empowerment estimates
             cfg = agent.model.reward_configs.get("empowerment", {})
-            learned_matrix, learned_state_to_idx = agent.model.get_full_transition_matrix()
+            learned_matrix, learned_state_to_idx = (
+                agent.model.get_full_transition_matrix()
+            )
             empowerment_estimates = compute_empowerment_for_all_states(
                 env=env,
                 transition_model=learned_matrix,
                 state_to_idx=learned_state_to_idx,
-                **cfg
+                **cfg,
             )
-            history['empowerment_estimates'].append(empowerment_estimates)
+            history["empowerment_estimates"].append(empowerment_estimates)
 
             # Compute and store novelty estimates
             cfg = agent.model.reward_configs.get("novelty", {})
@@ -206,11 +228,9 @@ def run_agent(
             for s in agent.model.observed_states:
                 x, y, dir = s
                 novelty_estimates[x, y, dir] = compute_novelty_for_state(
-                    agent.model.state_to_idx[s],
-                    agent.model,
-                    **cfg
+                    agent.model.state_to_idx[s], agent.model, **cfg
                 )
-            history['novelty_estimates'].append(novelty_estimates)
+            history["novelty_estimates"].append(novelty_estimates)
 
             if eval_idx < len(eval_steps):
                 next_eval = eval_steps[eval_idx]
@@ -224,7 +244,7 @@ def run_agent(
             state, _ = env.reset()
 
     # Store the final agent (includes the fully trained model)
-    history['final_agent'] = deepcopy(agent)
+    history["final_agent"] = deepcopy(agent)
 
     return history
 
@@ -275,7 +295,9 @@ def run_or_load(
             run_str += "-reward_none"
         if len(rewards) > 1:
             if combination_method is None:
-                raise ValueError("Combination method must be specified for multiple rewards.")
+                raise ValueError(
+                    "Combination method must be specified for multiple rewards."
+                )
             run_str += f"-{combination_method}"
 
     if agent_name in ("QAgent", "PrioritizedSweepingAgent"):
@@ -296,16 +318,22 @@ def run_or_load(
     filename = os.path.join(path, f"{run_str}.pkl")
 
     try:
-        with open(filename, 'rb') as f:
+        with open(filename, "rb") as f:
             history = pickle.load(f)
         print(f"Run exists: {filename}, loaded history from file.")
     except FileNotFoundError:
         print(f"Run does not exist: {filename}, running agent...")
         history = run_agent(
-            env, agent, n_steps, rewards, combination_method, eval_interval,
-            seed=seed, use_true_model=use_true_model
+            env,
+            agent,
+            n_steps,
+            rewards,
+            combination_method,
+            eval_interval,
+            seed=seed,
+            use_true_model=use_true_model,
         )
-        with open(filename, 'wb') as f:
+        with open(filename, "wb") as f:
             pickle.dump(history, f)
 
     return history

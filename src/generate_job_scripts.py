@@ -20,13 +20,13 @@ template_learning = """#!/bin/bash
 #SBATCH --gres=gpu:1
 #SBATCH --time=0-06:00
 #SBATCH --mem=10G
-#SBATCH --output=/mnt/lustre/work/wu/wkn758/{agent_type}_g{gamma}_l{lr}_q{q_init}_{reward_string}{combination_str}_seed{seed}-%j.out
-#SBATCH --error=/mnt/lustre/work/wu/wkn758/{agent_type}_g{gamma}_l{lr}_q{q_init}_{reward_string}{combination_str}_seed{seed}-%j.err
+#SBATCH --output=/mnt/lustre/work/wu/wkn601/{agent_type}_g{gamma}_l{lr}_q{q_init}_{reward_string}{combination_str}_seed{seed}-%j.out
+#SBATCH --error=/mnt/lustre/work/wu/wkn601/{agent_type}_g{gamma}_l{lr}_q{q_init}_{reward_string}{combination_str}_seed{seed}-%j.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=freddy.mantiuk@gmail.com
 
 source $HOME/.bashrc
-conda activate /mnt/lustre/work/wu/wkn758/conda_envs/empower
+conda activate /mnt/lustre/work/wu/wkn601/conda_envs/empower
 
 srun python3 {src_path}/run_single_agent.py \\
     --agent {agent_type} \\
@@ -47,13 +47,13 @@ template_random = """#!/bin/bash
 #SBATCH --partition=2080-galvani
 #SBATCH --time=0-03:00
 #SBATCH --mem=10G
-#SBATCH --output=/mnt/lustre/work/wu/wkn758/random_agent_seed{seed}-%j.out
-#SBATCH --error=/mnt/lustre/work/wu/wkn758/random_agent_seed{seed}-%j.err
+#SBATCH --output=/mnt/lustre/work/wu/wkn601/random_agent_seed{seed}-%j.out
+#SBATCH --error=/mnt/lustre/work/wu/wkn601/random_agent_seed{seed}-%j.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=freddy.mantiuk@gmail.com
 
 source $HOME/.bashrc
-conda activate /mnt/lustre/work/wu/wkn758/conda_envs/empower
+conda activate /mnt/lustre/work/wu/wkn601/conda_envs/empower
 
 srun python3 {src_path}/run_single_agent.py \
     --agent random \
